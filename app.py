@@ -28,22 +28,20 @@ st.markdown("""
 st.markdown("<div class='main-header'>YouTube Typical Performance (Gray Band) Data Fetcher</div>", unsafe_allow_html=True)
 st.markdown("This tool fetches video data from a YouTube channel and generates a typical performance band visualization.")
 
-# Sidebar for API configuration and advanced settings
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    
-    # API Key input (with fallback to secrets)
-    user_api_key = st.text_input("YouTube API Key (optional)", type="password", 
-                                help="Leave blank to use key from secrets.toml")
-    
-    # Use API key from secrets if provided, otherwise use user input
-    yt_api_key = st.secrets.get("YT_API_KEY") if not user_api_key else user_api_key
-    
+# Safely load API key from secrets.toml
+try:
+    yt_api_key = st.secrets["YT_API_KEY"]
     if not yt_api_key:
-        st.error("YouTube API Key is required - either add to secrets.toml or enter above")
+        st.error("YouTube API Key is missing from secrets.toml!")
+        st.stop()
+except Exception as e:
+    st.error(f"Error loading API key from secrets: {e}. Please check your secrets.toml file.")
+    st.stop()
+
+# Sidebar for advanced settings
+with st.sidebar:
+    st.header("⚙️ Advanced Settings")
     
-    # Advanced settings
-    st.subheader("Advanced Settings")
     use_real_data = st.checkbox("Use real YouTube data", value=False, 
                                help="If unchecked, will generate simulated data")
     
@@ -116,6 +114,28 @@ def fetch_youtube_data(channel_id, num_videos, api_key):
     except Exception as e:
         st.error(f"Error fetching YouTube data: {e}")
         return None, None
+
+# Function to fetch video statistics
+def fetch_video_stats(video_ids, api_key):
+    if not video_ids:
+        return {}
+    
+    # Can only fetch 50 videos at a time, so chunk if needed
+    all_stats = {}
+    video_chunks = [video_ids[i:i+50] for i in range(0, len(video_ids), 50)]
+    
+    for chunk in video_chunks:
+        video_ids_str = ','.join(chunk)
+        stats_url = f"https://www.googleapis.com/youtube/v3/videos?part=statistics&id={video_ids_str}&key={api_key}"
+        
+        try:
+            stats_res = requests.get(stats_url).json()
+            for item in stats_res.get('items', []):
+                all_stats[item['id']] = item['statistics']
+        except Exception as e:
+            st.warning(f"Error fetching stats for some videos: {e}")
+    
+    return all_stats
 
 # Function to generate simulated view data
 def generate_simulated_data(videos, days_to_analyze):
@@ -251,106 +271,130 @@ def create_performance_chart(df, summary, selected_video_id=None):
 # Main process flow
 if st.button("Fetch Data", type="primary") and channel_id:
     with st.spinner("Fetching channel data..."):
-        if yt_api_key:
-            videos, channel_name = fetch_youtube_data(channel_id, num_videos, yt_api_key)
+        videos, channel_name = fetch_youtube_data(channel_id, num_videos, yt_api_key)
+        
+        if not videos:
+            st.error("Failed to fetch video data. Please check your channel ID.")
+            st.stop()
             
-            if not videos:
-                st.error("Failed to fetch video data. Please check your channel ID and API key.")
-                st.stop()
-                
-            st.markdown(f"<div class='success-box'>Successfully fetched data for channel: <b>{channel_name}</b></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='success-box'>Successfully fetched data for channel: <b>{channel_name}</b></div>", unsafe_allow_html=True)
+        
+        # Get current stats for videos if using real data
+        if use_real_data:
+            video_ids = [v['videoId'] for v in videos]
+            video_stats = fetch_video_stats(video_ids, yt_api_key)
             
-            # Generate or fetch view data
-            if not use_real_data:
-                with st.spinner("Generating simulated view data..."):
-                    df = generate_simulated_data(videos, days_to_analyze)
-                    st.info("Using simulated data. For real view data, YouTube API requires OAuth integration.")
-            else:
-                # In a real application, you'd need to use YouTube Analytics API with OAuth
-                # This would require a more complex authentication flow
-                st.warning("Real YouTube Analytics data requires OAuth integration which is beyond this demo's scope.")
-                df = generate_simulated_data(videos, days_to_analyze)
+            # Add view counts to videos
+            for video in videos:
+                if video['videoId'] in video_stats:
+                    video['viewCount'] = int(video_stats[video['videoId']].get('viewCount', 0))
+                else:
+                    video['viewCount'] = 0
             
-            # Calculate typical performance band
-            summary = calculate_gray_band(df, percentile_range, use_median)
+            # Show notice about real data limitations
+            st.warning("Note: Only current view counts are available through the YouTube Data API. The full daily view history requires YouTube Analytics API with OAuth integration, which is beyond this demo's scope. The daily distribution is simulated based on the current total views.")
+        
+        # Generate view data
+        with st.spinner("Generating view data..."):
+            df = generate_simulated_data(videos, days_to_analyze)
             
-            # Display video selection dropdown
-            st.markdown("<div class='subheader'>Select a video to compare to typical performance</div>", unsafe_allow_html=True)
-            
-            # Group videos by ID and get titles
-            video_options = df[['videoId', 'title']].drop_duplicates().set_index('videoId')['title'].to_dict()
-            selected_video = st.selectbox("Choose a video", 
-                                         options=list(video_options.keys()),
-                                         format_func=lambda x: video_options[x])
-            
-            # Display the chart
-            fig = create_performance_chart(df, summary, selected_video)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Show key metrics for selected video
-            if selected_video:
-                video_data = df[df['videoId'] == selected_video].sort_values('day')
-                
-                if not video_data.empty:
-                    latest_data = video_data.iloc[-1]
-                    typical_at_same_day = summary[summary['day'] == latest_data['day']]
-                    
-                    if not typical_at_same_day.empty:
-                        typical_views = typical_at_same_day['typical'].values[0]
-                        performance_vs_typical = (latest_data['cumulative_views'] / typical_views - 1) * 100
+            # If using real data, adjust the simulated data to match current real view counts
+            if use_real_data:
+                video_ids = df['videoId'].unique()
+                for video_id in video_ids:
+                    video = next((v for v in videos if v['videoId'] == video_id), None)
+                    if video and 'viewCount' in video:
+                        real_views = video['viewCount']
+                        max_day = df[df['videoId'] == video_id]['day'].max()
+                        max_simulated_views = df[(df['videoId'] == video_id) & (df['day'] == max_day)]['cumulative_views'].values[0]
                         
-                        metric_cols = st.columns(4)
-                        with metric_cols[0]:
-                            st.markdown(f"<div class='metric-card'><b>Current Views</b><br>{int(latest_data['cumulative_views']):,}</div>", unsafe_allow_html=True)
-                        with metric_cols[1]:
-                            st.markdown(f"<div class='metric-card'><b>Days Live</b><br>{int(latest_data['day'])}</div>", unsafe_allow_html=True)
-                        with metric_cols[2]:
-                            st.markdown(f"<div class='metric-card'><b>Typical Views at this age</b><br>{int(typical_views):,}</div>", unsafe_allow_html=True)
-                        with metric_cols[3]:
-                            st.markdown(f"<div class='metric-card'><b>Performance vs Typical</b><br>{performance_vs_typical:.1f}%</div>", unsafe_allow_html=True)
+                        # Adjust factor to match real views
+                        if max_simulated_views > 0:  # Prevent division by zero
+                            adjustment_factor = real_views / max_simulated_views
+                            
+                            # Apply adjustment to all days for this video
+                            mask = df['videoId'] == video_id
+                            df.loc[mask, 'daily_views'] = df.loc[mask, 'daily_views'] * adjustment_factor
+                            df.loc[mask, 'cumulative_views'] = df.loc[mask, 'cumulative_views'] * adjustment_factor
+        
+        # Calculate typical performance band
+        summary = calculate_gray_band(df, percentile_range, use_median)
+        
+        # Display video selection dropdown
+        st.markdown("<div class='subheader'>Select a video to compare to typical performance</div>", unsafe_allow_html=True)
+        
+        # Group videos by ID and get titles
+        video_options = df[['videoId', 'title']].drop_duplicates().set_index('videoId')['title'].to_dict()
+        selected_video = st.selectbox("Choose a video", 
+                                     options=list(video_options.keys()),
+                                     format_func=lambda x: video_options[x])
+        
+        # Display the chart
+        fig = create_performance_chart(df, summary, selected_video)
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Show key metrics for selected video
+        if selected_video:
+            video_data = df[df['videoId'] == selected_video].sort_values('day')
             
-            # Display the data tables if requested
-            if show_raw_data:
-                st.markdown("<div class='subheader'>Data Tables</div>", unsafe_allow_html=True)
+            if not video_data.empty:
+                latest_data = video_data.iloc[-1]
+                typical_at_same_day = summary[summary['day'] == latest_data['day']]
                 
-                tabs = st.tabs(["Gray Band Data", "Video Data", "Raw Data"])
-                
-                with tabs[0]:
-                    st.write("### Typical Performance (Gray Band) Data")
-                    st.dataframe(summary)
+                if not typical_at_same_day.empty:
+                    typical_views = typical_at_same_day['typical'].values[0]
+                    performance_vs_typical = (latest_data['cumulative_views'] / typical_views - 1) * 100
                     
-                with tabs[1]:
-                    st.write("### Selected Video Data")
-                    if selected_video:
-                        st.dataframe(df[df['videoId'] == selected_video].sort_values('day'))
-                        
-                with tabs[2]:
-                    st.write("### All Raw Data")
-                    st.dataframe(df)
+                    metric_cols = st.columns(4)
+                    with metric_cols[0]:
+                        st.markdown(f"<div class='metric-card'><b>Current Views</b><br>{int(latest_data['cumulative_views']):,}</div>", unsafe_allow_html=True)
+                    with metric_cols[1]:
+                        st.markdown(f"<div class='metric-card'><b>Days Live</b><br>{int(latest_data['day'])}</div>", unsafe_allow_html=True)
+                    with metric_cols[2]:
+                        st.markdown(f"<div class='metric-card'><b>Typical Views at this age</b><br>{int(typical_views):,}</div>", unsafe_allow_html=True)
+                    with metric_cols[3]:
+                        st.markdown(f"<div class='metric-card'><b>Performance vs Typical</b><br>{performance_vs_typical:.1f}%</div>", unsafe_allow_html=True)
+        
+        # Display the data tables if requested
+        if show_raw_data:
+            st.markdown("<div class='subheader'>Data Tables</div>", unsafe_allow_html=True)
             
-            # Download options
-            st.markdown("<div class='subheader'>Download Data</div>", unsafe_allow_html=True)
-            col1, col2 = st.columns(2)
+            tabs = st.tabs(["Gray Band Data", "Video Data", "Raw Data"])
             
-            with col1:
-                st.download_button(
-                    "Download Gray Band Data", 
-                    summary.to_csv(index=False), 
-                    "youtube_gray_band.csv",
-                    "text/csv",
-                    key='download-gray-band'
-                )
+            with tabs[0]:
+                st.write("### Typical Performance (Gray Band) Data")
+                st.dataframe(summary)
                 
-            with col2:
-                st.download_button(
-                    "Download All Video Data", 
-                    df.to_csv(index=False),
-                    "youtube_video_data.csv",
-                    "text/csv",
-                    key='download-all-data'
-                )
-        else:
-            st.error("YouTube API Key is required. Please add to secrets.toml or enter in the sidebar.")
+            with tabs[1]:
+                st.write("### Selected Video Data")
+                if selected_video:
+                    st.dataframe(df[df['videoId'] == selected_video].sort_values('day'))
+                    
+            with tabs[2]:
+                st.write("### All Raw Data")
+                st.dataframe(df)
+        
+        # Download options
+        st.markdown("<div class='subheader'>Download Data</div>", unsafe_allow_html=True)
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.download_button(
+                "Download Gray Band Data", 
+                summary.to_csv(index=False), 
+                "youtube_gray_band.csv",
+                "text/csv",
+                key='download-gray-band'
+            )
+            
+        with col2:
+            st.download_button(
+                "Download All Video Data", 
+                df.to_csv(index=False),
+                "youtube_video_data.csv",
+                "text/csv",
+                key='download-all-data'
+            )
 
 # Display instructions at the bottom
 with st.expander("💡 How to use this tool"):
@@ -361,5 +405,10 @@ with st.expander("💡 How to use this tool"):
     4. Select a specific video from the dropdown to compare it to the typical performance band
     5. Download the data in CSV format for further analysis
     
-    **Note:** For actual YouTube Analytics data, you would need OAuth integration which is beyond the scope of this demo. This tool currently uses simulated data based on realistic patterns.
+    **Note on API Key**: This app requires a YouTube API key stored in the `secrets.toml` file. Make sure your `secrets.toml` contains:
+    ```
+    YT_API_KEY = "your-youtube-api-key"
+    ```
+    
+    **Note on Data**: For full daily view history, YouTube requires OAuth integration with the YouTube Analytics API, which is beyond this app's scope. This tool shows current total views from the YouTube Data API and simulates the daily distribution based on common growth patterns.
     """)
