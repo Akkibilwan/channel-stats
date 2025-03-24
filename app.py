@@ -3,8 +3,12 @@ import requests
 import pandas as pd
 import datetime
 
-# Load API key securely from Streamlit secrets
-yt_api_key = st.secrets["YT_API_KEY"]
+# Safely load API key
+yt_api_key = st.secrets.get("YT_API_KEY", None)
+
+if not yt_api_key:
+    st.error("YouTube API Key is missing from secrets.toml!")
+    st.stop()
 
 # Streamlit UI
 st.title("YouTube Typical Performance (Gray Band) Data Fetcher")
@@ -17,6 +21,10 @@ if st.button("Fetch Data") and channel_id:
     playlist_url = f"https://www.googleapis.com/youtube/v3/channels?part=contentDetails&id={channel_id}&key={yt_api_key}"
     playlist_res = requests.get(playlist_url).json()
 
+    if 'items' not in playlist_res or not playlist_res['items']:
+        st.error("Invalid Channel ID or no uploads found.")
+        st.stop()
+
     uploads_playlist_id = playlist_res['items'][0]['contentDetails']['relatedPlaylists']['uploads']
 
     # Step 2: Get video IDs from uploads playlist
@@ -24,7 +32,10 @@ if st.button("Fetch Data") and channel_id:
     next_page_token = ""
 
     while len(videos) < num_videos and next_page_token is not None:
-        playlist_items_url = f"https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults=10&playlistId={uploads_playlist_id}&key={yt_api_key}&pageToken={next_page_token}"
+        playlist_items_url = f"https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults=10&playlistId={uploads_playlist_id}&key={yt_api_key}"
+        if next_page_token:
+            playlist_items_url += f"&pageToken={next_page_token}"
+
         playlist_items_res = requests.get(playlist_items_url).json()
 
         for item in playlist_items_res.get('items', []):
@@ -39,11 +50,7 @@ if st.button("Fetch Data") and channel_id:
     # Step 3: Build the gray band data
     data = []
     for video_id in videos:
-        # Using YouTube Analytics API (simulate here since real requires OAuth)
-        st.write(f"[API LIMIT] Placeholder - Fetch daily views for video ID: {video_id}")
-        # Here, you'd make an authenticated call to `youtubeAnalytics.reports.query`
-
-        # For demonstration, we simulate with random data:
+        # Placeholder - Simulate daily views for demonstration
         for day in range(0, 18):
             data.append({
                 "videoId": video_id,
