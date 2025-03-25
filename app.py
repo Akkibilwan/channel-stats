@@ -90,10 +90,10 @@ except Exception as e:
 # ------------------------
 def extract_channel_id(url):
     patterns = [
-        r'youtube\.com/channel/([^/\s?]+)',     # Standard channel URL
-        r'youtube\.com/c/([^/\s?]+)',           # Custom URL
-        r'youtube\.com/user/([^/\s?]+)',        # Legacy username URL
-        r'youtube\.com/@([^/\s?]+)'             # Handle URL (@username)
+        r'youtube\.com/channel/([^/\s?]+)',
+        r'youtube\.com/c/([^/\s?]+)',
+        r'youtube\.com/user/([^/\s?]+)',
+        r'youtube\.com/@([^/\s?]+)'
     ]
     for pattern in patterns:
         match = re.search(pattern, url)
@@ -108,10 +108,10 @@ def extract_channel_id(url):
 
 def extract_video_id(url):
     patterns = [
-        r'youtube\.com/watch\?v=([^&\s]+)',     
-        r'youtu\.be/([^?\s]+)',                 
-        r'youtube\.com/embed/([^?\s]+)',        
-        r'youtube\.com/v/([^?\s]+)'             
+        r'youtube\.com/watch\?v=([^&\s]+)',
+        r'youtu\.be/([^?\s]+)',
+        r'youtube\.com/embed/([^?\s]+)',
+        r'youtube\.com/v/([^?\s]+)'
     ]
     for pattern in patterns:
         match = re.search(pattern, url)
@@ -330,7 +330,7 @@ def simulate_video_performance(video_data, benchmark_data, max_days, approach="f
         days_since_publish = 2
     if approach == "full":
         days_to_project = max(days_since_publish, max_days)
-    else:  # "current" approach stops at video’s current age
+    else:
         days_to_project = days_since_publish
     data = []
     if days_since_publish < len(benchmark_data):
@@ -358,21 +358,20 @@ def simulate_video_performance(video_data, benchmark_data, max_days, approach="f
             'cumulative_views': cumulative_views,
             'projected': False
         })
-    if days_to_project > days_since_publish:
-        if approach == "full":
-            for day in range(days_since_publish + 1, days_to_project + 1):
-                if day >= len(benchmark_data):
-                    break
-                benchmark_views = benchmark_data.loc[day, 'median']
-                projected_views = int(benchmark_views * performance_ratio)
-                prev_cumulative = data[-1]['cumulative_views']
-                daily_views = max(0, projected_views - prev_cumulative)
-                data.append({
-                    'day': day,
-                    'daily_views': daily_views,
-                    'cumulative_views': projected_views,
-                    'projected': True
-                })
+    if days_to_project > days_since_publish and approach == "full":
+        for day in range(days_since_publish + 1, days_to_project + 1):
+            if day >= len(benchmark_data):
+                break
+            benchmark_views = benchmark_data.loc[day, 'median']
+            projected_views = int(benchmark_views * performance_ratio)
+            prev_cumulative = data[-1]['cumulative_views']
+            daily_views = max(0, projected_views - prev_cumulative)
+            data.append({
+                'day': day,
+                'daily_views': daily_views,
+                'cumulative_views': projected_views,
+                'projected': True
+            })
     return pd.DataFrame(data)
 
 def create_comparison_chart(benchmark_data, video_data, video_title, video_type_str, theme_colors, approach_mode="full"):
@@ -409,6 +408,14 @@ def create_comparison_chart(benchmark_data, video_data, video_title, video_type_
             y=avg_band,
             name=f'Average of Typical Range ({video_type_str})',
             line=dict(color=theme_colors['primary_color'], width=2, dash='dot'),
+            mode='lines'
+        ))
+        # And add a new trace for the channel's cumulative mean views
+        fig.add_trace(go.Scatter(
+            x=benchmark_data['day'],
+            y=benchmark_data['mean'],
+            name=f'Channel Cumulative Mean ({video_type_str})',
+            line=dict(color=theme_colors['primary_color'], width=2, dash='longdash'),
             mode='lines'
         ))
     actual_data = video_data[video_data['projected'] == False]
@@ -452,17 +459,16 @@ def create_comparison_chart(benchmark_data, video_data, video_title, video_type_
 # ------------------------
 with st.sidebar:
     st.header("Settings")
-    # Video type filter
     video_type = st.radio(
         "Video Type to Compare Against",
         options=["all", "long_form", "shorts", "auto"],
-        format_func=lambda x: "All Videos" if x == "all" else 
-                           ("Shorts Only" if x == "shorts" else 
-                            ("Long-form Only" if x == "long_form" else 
-                             "Auto-detect (match video type)")),
+        format_func=lambda x: "All Videos" if x == "all" else (
+            "Shorts Only" if x == "shorts" else (
+                "Long-form Only" if x == "long_form" else "Auto-detect (match video type)"
+            )
+        ),
         index=3
     )
-    # Comparison Approach selection
     comparison_approach = st.radio(
         "Comparison Approach",
         options=["Approach 1: Full Projection", 
@@ -476,7 +482,6 @@ with st.sidebar:
         approach_mode = "current"
     else:
         approach_mode = "extra"
-    # Days to analyze slider (for full projection)
     max_days = st.slider(
         "Days to Analyze (for full projection)",
         min_value=7,
@@ -485,7 +490,6 @@ with st.sidebar:
         step=1,
         help="Number of days to analyze after video upload (set high for lifetime)"
     )
-    # Option to include all videos
     include_all_videos = st.checkbox("Include all videos", value=False)
     if include_all_videos:
         num_videos = None
@@ -498,7 +502,6 @@ with st.sidebar:
             step=10,
             help="More videos creates a more stable benchmark"
         )
-    # Updated band percentage slider
     percentile_range = st.slider(
         "Middle Percentage Range for Band",
         min_value=10,
@@ -539,7 +542,6 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
             st.warning(f"The video belongs to channel '{video_details['channelTitle']}', which is different from the channel URL you provided. Analysis may not be accurate.")
         published_date = datetime.datetime.fromisoformat(video_details['publishedAt'].replace('Z', '+00:00')).date()
         video_age = (datetime.datetime.now().date() - published_date).days
-        # For Approaches 2 and 3, use video’s age (min 2 days)
         if approach_mode in ["current", "extra"]:
             analysis_days = video_age if video_age >= 2 else 2
         else:
@@ -574,7 +576,7 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
         # Remove the target video from the channel benchmark
         if video_id in detailed_videos:
             del detailed_videos[video_id]
-        # Compute additional channel stats from the benchmark videos
+        # Compute additional channel stats from benchmark videos
         vph_list = []
         engagement_list = []
         for vid, details in detailed_videos.items():
@@ -665,7 +667,6 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
                 st.markdown(f"<div class='metric-card'><b>Performance</b><br><span style='color:{performance_color}'>{vs_benchmark_str}</span></div>", unsafe_allow_html=True)
             with metric_cols_extra[4]:
                 st.markdown(f"<div class='metric-card'><b>Ranking</b><br><span style='color:{performance_color}'>{percentile}</span></div>", unsafe_allow_html=True)
-            # Additional stats for benchmark videos
             channel_stats_cols = st.columns(2)
             with channel_stats_cols[0]:
                 st.metric("Channel VPH", f"{avg_vph:,.1f}")
