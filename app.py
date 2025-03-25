@@ -51,7 +51,6 @@ else:
     line_color = "#F50057"  # Accent color for highlight
     benchmark_color = "#6200EE"  # Primary color for benchmark
 
-# Include primary_color in our theme_colors for extra traces
 theme_colors = {
     'background_color': background_color,
     'text_color': text_color,
@@ -318,9 +317,6 @@ def calculate_benchmark(df, band_percentage):
     ]).reset_index()
     return summary
 
-# The simulation function now accepts an extra parameter “approach”
-# For approach "full", it projects to the user-set max_days
-# For approach "current" (used by Approach 2 and 3), it stops at the video’s current age
 def simulate_video_performance(video_data, benchmark_data, max_days, approach="full"):
     try:
         published_at = datetime.datetime.fromisoformat(video_data['publishedAt'].replace('Z', '+00:00')).date()
@@ -334,7 +330,7 @@ def simulate_video_performance(video_data, benchmark_data, max_days, approach="f
         days_since_publish = 2
     if approach == "full":
         days_to_project = max(days_since_publish, max_days)
-    else:  # approach "current"
+    else:  # "current" approach stops at video’s current age
         days_to_project = days_since_publish
     data = []
     if days_since_publish < len(benchmark_data):
@@ -379,8 +375,6 @@ def simulate_video_performance(video_data, benchmark_data, max_days, approach="f
                 })
     return pd.DataFrame(data)
 
-# The chart creation function now accepts an extra parameter “approach_mode”
-# If approach_mode=="extra" (i.e. Approach 3) an extra trace is added for the average band
 def create_comparison_chart(benchmark_data, video_data, video_title, video_type_str, theme_colors, approach_mode="full"):
     fig = go.Figure()
     fig.add_trace(go.Scatter(
@@ -407,9 +401,8 @@ def create_comparison_chart(benchmark_data, video_data, video_title, video_type_
         line=dict(color=theme_colors['benchmark_color'], width=2, dash='dash'),
         mode='lines'
     ))
-    # If using Approach 3, add an extra trace for the average of the band (lower and upper)
+    # For Approach 3, add an extra trace for the average of the band
     if approach_mode == "extra":
-        # Compute average band line
         avg_band = (benchmark_data['lower_band'] + benchmark_data['upper_band']) / 2
         fig.add_trace(go.Scatter(
             x=benchmark_data['day'],
@@ -483,7 +476,7 @@ with st.sidebar:
         approach_mode = "current"
     else:
         approach_mode = "extra"
-    # Days to analyze slider (applies for Approach 1)
+    # Days to analyze slider (for full projection)
     max_days = st.slider(
         "Days to Analyze (for full projection)",
         min_value=7,
@@ -546,7 +539,7 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
             st.warning(f"The video belongs to channel '{video_details['channelTitle']}', which is different from the channel URL you provided. Analysis may not be accurate.")
         published_date = datetime.datetime.fromisoformat(video_details['publishedAt'].replace('Z', '+00:00')).date()
         video_age = (datetime.datetime.now().date() - published_date).days
-        # For Approach 2 and 3, set analysis days to the video's age (minimum 2 days)
+        # For Approaches 2 and 3, use video’s age (min 2 days)
         if approach_mode in ["current", "extra"]:
             analysis_days = video_age if video_age >= 2 else 2
         else:
@@ -578,6 +571,21 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
     with st.spinner("Processing benchmark data..."):
         video_ids = [v['videoId'] for v in channel_videos]
         detailed_videos = fetch_video_details(video_ids, yt_api_key)
+        # Remove the target video from the channel benchmark
+        if video_id in detailed_videos:
+            del detailed_videos[video_id]
+        # Compute additional channel stats from the benchmark videos
+        vph_list = []
+        engagement_list = []
+        for vid, details in detailed_videos.items():
+            if details['duration'] > 0:
+                duration_hours = details['duration'] / 3600
+                vph_list.append(details['viewCount'] / duration_hours)
+            if details['viewCount'] > 0:
+                engagement_list.append((details['likeCount'] + details['commentCount']) / details['viewCount'] * 100)
+        avg_vph = np.mean(vph_list) if vph_list else 0
+        avg_engagement = np.mean(engagement_list) if engagement_list else 0
+
         if video_type == "auto":
             is_short_filter = video_details['isShort']
             video_type_str = "Shorts" if is_short_filter else "Long-form Videos"
@@ -606,16 +614,15 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
             st.error("Not enough data to create a benchmark. Try including more videos or changing the video type filter.")
             st.stop()
         benchmark_stats = calculate_benchmark(benchmark_df, percentile_range)
-        # For Approach 3, add an extra column for the average band (for charting purposes)
         if approach_mode == "extra":
             benchmark_stats['avg_band'] = (benchmark_stats['lower_band'] + benchmark_stats['upper_band']) / 2
-        # For simulation, if using Approach 1, pass max_days; otherwise, use analysis_days
         sim_approach = "full" if approach_mode == "full" else "current"
         video_performance = simulate_video_performance(video_details, benchmark_stats, analysis_days, approach=sim_approach)
         fig = create_comparison_chart(benchmark_stats, video_performance, 
                                       video_details['title'][:40] + "..." if len(video_details['title']) > 40 else video_details['title'], 
                                       video_type_str, theme_colors, approach_mode=approach_mode)
         st.plotly_chart(fig, use_container_width=True)
+        
         st.markdown("<div class='subheader'>Performance Analysis</div>", unsafe_allow_html=True)
         day_index = min(video_age, len(benchmark_stats) - 1)
         if day_index < 0:
@@ -623,7 +630,6 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
         benchmark_median = benchmark_stats.loc[day_index, 'median']
         benchmark_lower = benchmark_stats.loc[day_index, 'lower_band']
         benchmark_upper = benchmark_stats.loc[day_index, 'upper_band']
-        # For Approach 3, also compute the average of the band at this day
         if approach_mode == "extra":
             benchmark_avg = (benchmark_lower + benchmark_upper) / 2
         if video_details['viewCount'] >= benchmark_upper:
@@ -647,7 +653,6 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
             vs_benchmark_str = f"{vs_benchmark_pct:+.1f}% vs typical"
         else:
             vs_benchmark_str = "N/A"
-        # Display metrics; if Approach 3, include an extra metric for channel average views
         if approach_mode == "extra":
             metric_cols_extra = st.columns(5)
             with metric_cols_extra[0]:
@@ -660,6 +665,12 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
                 st.markdown(f"<div class='metric-card'><b>Performance</b><br><span style='color:{performance_color}'>{vs_benchmark_str}</span></div>", unsafe_allow_html=True)
             with metric_cols_extra[4]:
                 st.markdown(f"<div class='metric-card'><b>Ranking</b><br><span style='color:{performance_color}'>{percentile}</span></div>", unsafe_allow_html=True)
+            # Additional stats for benchmark videos
+            channel_stats_cols = st.columns(2)
+            with channel_stats_cols[0]:
+                st.metric("Channel VPH", f"{avg_vph:,.1f}")
+            with channel_stats_cols[1]:
+                st.metric("Channel Engagement Rate", f"{avg_engagement:,.1f}%")
         else:
             metric_cols = st.columns(4)
             with metric_cols[0]:
