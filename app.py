@@ -76,7 +76,9 @@ except Exception as e:
     st.error(f"Error loading API key from secrets: {e}. Please check your secrets.toml file.")
     st.stop()
 
-# Function to extract channel ID from channel URL
+# ------------------------
+# URL Parsing Functions
+# ------------------------
 def extract_channel_id(url):
     patterns = [
         r'youtube\.com/channel/([^/\s?]+)',     # Standard channel URL
@@ -97,7 +99,6 @@ def extract_channel_id(url):
         return url.strip()
     return None
 
-# Function to extract video ID from video URL
 def extract_video_id(url):
     patterns = [
         r'youtube\.com/watch\?v=([^&\s]+)',     
@@ -116,7 +117,6 @@ def extract_video_id(url):
             
     return None
 
-# Function to get channel ID from custom URL, username, or handle
 def get_channel_id_from_identifier(identifier, pattern_used):
     try:
         if pattern_used == r'youtube\.com/channel/([^/\s?]+)':
@@ -146,7 +146,9 @@ def get_channel_id_from_identifier(identifier, pattern_used):
     
     return None
 
-# Function to fetch channel videos data
+# ------------------------
+# Data Fetching Functions
+# ------------------------
 def fetch_channel_videos(channel_id, max_videos, api_key):
     playlist_url = f"https://www.googleapis.com/youtube/v3/channels?part=contentDetails,snippet,statistics&id={channel_id}&key={api_key}"
     try:
@@ -163,7 +165,6 @@ def fetch_channel_videos(channel_id, max_videos, api_key):
         videos = []
         next_page_token = ""
         
-        # Continue until no more pages or max_videos reached (if max_videos is set)
         while (max_videos is None or len(videos) < max_videos) and next_page_token is not None:
             playlist_items_url = f"https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails,snippet&maxResults=50&playlistId={uploads_playlist_id}&key={api_key}"
             if next_page_token:
@@ -188,7 +189,6 @@ def fetch_channel_videos(channel_id, max_videos, api_key):
         st.error(f"Error fetching YouTube data: {e}")
         return None, None, None
 
-# Function to fetch video details
 def fetch_video_details(video_ids, api_key):
     if not video_ids:
         return {}
@@ -201,7 +201,7 @@ def fetch_video_details(video_ids, api_key):
         try:
             details_res = requests.get(details_url).json()
             for item in details_res.get('items', []):
-                duration_str = item['contentDetails']['duration']  # PT1M30S format
+                duration_str = item['contentDetails']['duration']
                 duration_seconds = parse_duration(duration_str)
                 published_at = item['snippet']['publishedAt']
                 all_details[item['id']] = {
@@ -212,14 +212,13 @@ def fetch_video_details(video_ids, api_key):
                     'publishedAt': published_at,
                     'title': item['snippet']['title'],
                     'thumbnailUrl': item['snippet'].get('thumbnails', {}).get('medium', {}).get('url', ''),
-                    'isShort': duration_seconds <= 120  # Consider videos ≤ 120 seconds as shorts
+                    'isShort': duration_seconds <= 120
                 }
         except Exception as e:
             st.warning(f"Error fetching details for some videos: {e}")
     
     return all_details
 
-# Function to parse ISO 8601 duration format to seconds
 def parse_duration(duration_str):
     hours = re.search(r'(\d+)H', duration_str)
     minutes = re.search(r'(\d+)M', duration_str)
@@ -235,70 +234,6 @@ def parse_duration(duration_str):
         
     return total_seconds
 
-# Function to generate historical view data based on current views
-def generate_historical_data(video_details, max_days, is_short=False):
-    today = datetime.datetime.now().date()
-    all_video_data = []
-    
-    for video_id, details in video_details.items():
-        if is_short is not None and details['isShort'] != is_short:
-            continue
-            
-        try:
-            publish_date = datetime.datetime.fromisoformat(details['publishedAt'].replace('Z', '+00:00')).date()
-            video_age_days = (today - publish_date).days
-        except:
-            continue
-            
-        if video_age_days < 3:
-            continue
-            
-        days_to_generate = video_age_days if max_days > video_age_days else max_days
-        
-        total_views = details['viewCount']
-        video_data = generate_view_trajectory(video_id, days_to_generate, total_views, details['isShort'])
-        all_video_data.extend(video_data)
-    
-    if not all_video_data:
-        return pd.DataFrame()
-    return pd.DataFrame(all_video_data)
-
-# Function to generate realistic view trajectory
-def generate_view_trajectory(video_id, days, total_views, is_short):
-    data = []
-    if is_short:
-        trajectory = [total_views * (1 - np.exp(-5 * ((i+1)/days)**1.5)) for i in range(days)]
-    else:
-        k = 10  # Growth rate
-        trajectory = [total_views * (1 / (1 + np.exp(-k * ((i+1)/days - 0.35)))) for i in range(days)]
-    
-    scaling_factor = total_views / trajectory[-1] if trajectory[-1] > 0 else 1
-    trajectory = [v * scaling_factor for v in trajectory]
-    
-    noise_factor = 0.05  # 5% noise
-    for i in range(days):
-        noise = np.random.normal(0, noise_factor * total_views)
-        if i == 0:
-            noisy_value = max(100, trajectory[i] + noise)
-        else:
-            noisy_value = max(trajectory[i-1] + 10, trajectory[i] + noise)
-        trajectory[i] = noisy_value
-    
-    daily_views = [trajectory[0]]
-    for i in range(1, days):
-        daily_views.append(trajectory[i] - trajectory[i-1])
-    
-    for day in range(days):
-        data.append({
-            'videoId': video_id,
-            'day': day,
-            'daily_views': int(daily_views[day]),
-            'cumulative_views': int(trajectory[day])
-        })
-    
-    return data
-
-# Function to fetch single video details
 def fetch_single_video(video_id, api_key):
     video_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id={video_id}&key={api_key}"
     try:
@@ -327,7 +262,70 @@ def fetch_single_video(video_id, api_key):
         st.error(f"Error fetching video details: {e}")
         return None
 
-# Function to calculate the performance benchmark using the adjustable band range
+# ------------------------
+# Benchmark & Simulation Functions
+# ------------------------
+def generate_historical_data(video_details, max_days, is_short=False):
+    today = datetime.datetime.now().date()
+    all_video_data = []
+    
+    for video_id, details in video_details.items():
+        if is_short is not None and details['isShort'] != is_short:
+            continue
+            
+        try:
+            publish_date = datetime.datetime.fromisoformat(details['publishedAt'].replace('Z', '+00:00')).date()
+            video_age_days = (today - publish_date).days
+        except:
+            continue
+            
+        if video_age_days < 3:
+            continue
+            
+        days_to_generate = video_age_days if max_days > video_age_days else max_days
+        
+        total_views = details['viewCount']
+        video_data = generate_view_trajectory(video_id, days_to_generate, total_views, details['isShort'])
+        all_video_data.extend(video_data)
+    
+    if not all_video_data:
+        return pd.DataFrame()
+    return pd.DataFrame(all_video_data)
+
+def generate_view_trajectory(video_id, days, total_views, is_short):
+    data = []
+    if is_short:
+        trajectory = [total_views * (1 - np.exp(-5 * ((i+1)/days)**1.5)) for i in range(days)]
+    else:
+        k = 10
+        trajectory = [total_views * (1 / (1 + np.exp(-k * ((i+1)/days - 0.35)))) for i in range(days)]
+    
+    scaling_factor = total_views / trajectory[-1] if trajectory[-1] > 0 else 1
+    trajectory = [v * scaling_factor for v in trajectory]
+    
+    noise_factor = 0.05
+    for i in range(days):
+        noise = np.random.normal(0, noise_factor * total_views)
+        if i == 0:
+            noisy_value = max(100, trajectory[i] + noise)
+        else:
+            noisy_value = max(trajectory[i-1] + 10, trajectory[i] + noise)
+        trajectory[i] = noisy_value
+    
+    daily_views = [trajectory[0]]
+    for i in range(1, days):
+        daily_views.append(trajectory[i] - trajectory[i-1])
+    
+    for day in range(days):
+        data.append({
+            'videoId': video_id,
+            'day': day,
+            'daily_views': int(daily_views[day]),
+            'cumulative_views': int(trajectory[day])
+        })
+    
+    return data
+
 def calculate_benchmark(df, band_percentage):
     lower_q = (100 - band_percentage) / 200
     upper_q = 1 - (100 - band_percentage) / 200
@@ -340,8 +338,8 @@ def calculate_benchmark(df, band_percentage):
     ]).reset_index()
     return summary
 
-# Function to simulate video performance projection
-def simulate_video_performance(video_data, benchmark_data, max_days):
+# Modified simulation function now accepts an extra parameter “approach”
+def simulate_video_performance(video_data, benchmark_data, max_days, approach="full"):
     try:
         published_at = datetime.datetime.fromisoformat(video_data['publishedAt'].replace('Z', '+00:00')).date()
         current_date = datetime.datetime.now().date()
@@ -354,10 +352,14 @@ def simulate_video_performance(video_data, benchmark_data, max_days):
     
     if days_since_publish < 2:
         days_since_publish = 2
-    
-    # Removed the cap of 90 days – now using the selected max_days for projection.
-    days_to_project = max(days_since_publish, max_days)
-    
+
+    # For approach 1, project out to the selected max_days.
+    # For approach 2, only simulate up to the video’s current age.
+    if approach == "full":
+        days_to_project = max(days_since_publish, max_days)
+    else:  # approach == "current"
+        days_to_project = days_since_publish
+
     data = []
     if days_since_publish < len(benchmark_data):
         benchmark_views_at_current_age = benchmark_data.loc[days_since_publish, 'median']
@@ -387,23 +389,24 @@ def simulate_video_performance(video_data, benchmark_data, max_days):
         })
     
     if days_to_project > days_since_publish:
-        for day in range(days_since_publish + 1, days_to_project + 1):
-            if day >= len(benchmark_data):
-                break
-            benchmark_views = benchmark_data.loc[day, 'median']
-            projected_views = int(benchmark_views * performance_ratio)
-            prev_cumulative = data[-1]['cumulative_views']
-            daily_views = max(0, projected_views - prev_cumulative)
-            data.append({
-                'day': day,
-                'daily_views': daily_views,
-                'cumulative_views': projected_views,
-                'projected': True
-            })
+        # Only add projected data in approach 1.
+        if approach == "full":
+            for day in range(days_since_publish + 1, days_to_project + 1):
+                if day >= len(benchmark_data):
+                    break
+                benchmark_views = benchmark_data.loc[day, 'median']
+                projected_views = int(benchmark_views * performance_ratio)
+                prev_cumulative = data[-1]['cumulative_views']
+                daily_views = max(0, projected_views - prev_cumulative)
+                data.append({
+                    'day': day,
+                    'daily_views': daily_views,
+                    'cumulative_views': projected_views,
+                    'projected': True
+                })
     
     return pd.DataFrame(data)
 
-# Function to create the performance comparison chart
 def create_comparison_chart(benchmark_data, video_data, video_title, video_type_str, theme_colors):
     fig = go.Figure()
     
@@ -474,10 +477,13 @@ def create_comparison_chart(benchmark_data, video_data, video_title, video_type_
     
     return fig
 
-# Sidebar settings
+# ------------------------
+# Sidebar Settings
+# ------------------------
 with st.sidebar:
     st.header("Settings")
     
+    # Video type filter
     video_type = st.radio(
         "Video Type to Compare Against",
         options=["all", "long_form", "shorts", "auto"],
@@ -488,9 +494,16 @@ with st.sidebar:
         index=3
     )
     
-    # Updated days slider for lifetime analysis (up to 3650 days)
+    # Comparison Approach selection
+    comparison_approach = st.radio(
+        "Comparison Approach",
+        options=["Approach 1: Full Projection", "Approach 2: Compare by Video Age"],
+        index=0
+    )
+    
+    # Days to analyze slider (applies for Approach 1)
     max_days = st.slider(
-        "Days to Analyze",
+        "Days to Analyze (for full projection)",
         min_value=7,
         max_value=3650,
         value=30,
@@ -512,7 +525,7 @@ with st.sidebar:
             help="More videos creates a more stable benchmark"
         )
     
-    # Updated band percentage slider (middle percentage range)
+    # Updated band percentage slider
     percentile_range = st.slider(
         "Middle Percentage Range for Band",
         min_value=10,
@@ -524,16 +537,19 @@ with st.sidebar:
     
     show_data_tables = st.checkbox("Show data tables", value=False)
 
-# Main input section with two columns
+# ------------------------
+# Main Input Section
+# ------------------------
 col1, col2 = st.columns(2)
 
 with col1:
     channel_url = st.text_input("Channel URL:", placeholder="https://www.youtube.com/@ChannelName")
-    
 with col2:
     video_url = st.text_input("Video URL to Compare:", placeholder="https://www.youtube.com/watch?v=VideoID")
 
-# Main process flow
+# ------------------------
+# Main Process Flow
+# ------------------------
 if st.button("Generate Benchmark", type="primary") and channel_url and video_url:
     channel_id = extract_channel_id(channel_url)
     video_id = extract_video_id(video_url)
@@ -541,7 +557,6 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
     if not channel_id:
         st.error("Could not extract a valid channel ID from the provided URL. Please check the URL format.")
         st.stop()
-        
     if not video_id:
         st.error("Could not extract a valid video ID from the provided URL. Please check the URL format.")
         st.stop()
@@ -554,6 +569,15 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
             
         if video_details['channelId'] != channel_id:
             st.warning(f"The video belongs to channel '{video_details['channelTitle']}', which is different from the channel URL you provided. Analysis may not be accurate.")
+        
+        # Determine the video's age in days
+        published_date = datetime.datetime.fromisoformat(video_details['publishedAt'].replace('Z', '+00:00')).date()
+        video_age = (datetime.datetime.now().date() - published_date).days
+        # For Approach 2, override days to analyze with the video's age (minimum 2 days)
+        if comparison_approach == "Approach 2: Compare by Video Age":
+            analysis_days = video_age if video_age >= 2 else 2
+        else:
+            analysis_days = max_days
     
     with st.spinner("Fetching channel videos for benchmark..."):
         channel_videos, channel_name, channel_stats = fetch_channel_videos(channel_id, num_videos, yt_api_key)
@@ -571,13 +595,9 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
             minutes, seconds = divmod(video_details['duration'], 60)
             hours, minutes = divmod(minutes, 60)
             duration_str = f"{hours}h {minutes}m {seconds}s" if hours else f"{minutes}m {seconds}s"
-            published_date = datetime.datetime.fromisoformat(video_details['publishedAt'].replace('Z', '+00:00')).date()
-            days_since_published = (datetime.datetime.now().date() - published_date).days
-            
             st.markdown(f"**Title:** {video_details['title']}")
-            st.markdown(f"**Published:** {published_date} ({days_since_published} days ago)")
+            st.markdown(f"**Published:** {published_date} ({video_age} days ago)")
             st.markdown(f"**Duration:** {duration_str} ({'Short' if video_details['isShort'] else 'Long-form'})")
-            
             metrics_cols = st.columns(3)
             with metrics_cols[0]:
                 st.metric("Views", f"{video_details['viewCount']:,}")
@@ -599,7 +619,7 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
         elif video_type == "long_form":
             is_short_filter = False
             video_type_str = "Long-form Videos"
-        else:  
+        else:
             is_short_filter = None
             video_type_str = "All Videos"
         
@@ -617,13 +637,17 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
             
         st.info(f"Building benchmark from {len(detailed_videos)} videos: {shorts_count} shorts and {longform_count} long-form videos")
         
-        benchmark_df = generate_historical_data(detailed_videos, max_days, is_short_filter)
+        # Generate benchmark data using the determined number of days
+        benchmark_df = generate_historical_data(detailed_videos, analysis_days, is_short_filter)
         if benchmark_df.empty:
             st.error("Not enough data to create a benchmark. Try including more videos or changing the video type filter.")
             st.stop()
             
         benchmark_stats = calculate_benchmark(benchmark_df, percentile_range)
-        video_performance = simulate_video_performance(video_details, benchmark_stats, max_days)
+        
+        # For simulation, pass the chosen approach (“full” for Approach 1 and “current” for Approach 2)
+        approach_mode = "full" if comparison_approach == "Approach 1: Full Projection" else "current"
+        video_performance = simulate_video_performance(video_details, benchmark_stats, analysis_days, approach=approach_mode)
         
         theme_colors = {
             'background_color': background_color,
@@ -640,10 +664,7 @@ if st.button("Generate Benchmark", type="primary") and channel_url and video_url
         
         st.markdown("<div class='subheader'>Performance Analysis</div>", unsafe_allow_html=True)
         
-        published_at = datetime.datetime.fromisoformat(video_details['publishedAt'].replace('Z', '+00:00')).date()
-        current_date = datetime.datetime.now().date()
-        days_since_publish = (current_date - published_at).days
-        day_index = min(days_since_publish, len(benchmark_stats) - 1)
+        day_index = min(video_age, len(benchmark_stats) - 1)
         if day_index < 0:
             day_index = 0
             
